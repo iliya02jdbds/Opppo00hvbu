@@ -303,31 +303,34 @@ def _ig_challenge_code_handler(username: str, choice) -> str:
 
 
 def _parse_sessionid_from_cookies(cookies_path: Path) -> str:
-    """Extract sessionid value from a Netscape cookie file."""
+    """Extract sessionid value from a Netscape cookie file (URL-decoded)."""
+    from urllib.parse import unquote
     try:
         for line in cookies_path.read_text(encoding="utf-8").splitlines():
             if line.startswith("#") or not line.strip():
                 continue
             parts = line.strip().split("\t")
             if len(parts) >= 7 and parts[5] == "sessionid":
-                return parts[6]
+                return unquote(parts[6])  # decode %3A → :
     except Exception as exc:  # noqa: BLE001
         log.warning("Could not parse sessionid from cookies file: %s", exc)
     return ""
 
 
 def init_instagram() -> None:
+    from urllib.parse import unquote
     global ig_client
     if not HAS_INSTA:
         return
 
     # ── روش اول: sessionid مستقیم (بدون پسورد، بدون چالش) ──────────────────
     # اولویت: env var > cookies.txt > skip
-    session_id = IG_SESSION_ID
+    session_id = unquote(IG_SESSION_ID) if IG_SESSION_ID else ""
     if not session_id and COOKIES_FILE.exists():
         session_id = _parse_sessionid_from_cookies(COOKIES_FILE)
 
     if session_id:
+        log.warning("Attempting Instagram login via sessionid: %s...", session_id[:20])
         try:
             client = InstaClient()
             client.login_by_sessionid(session_id)
@@ -337,12 +340,12 @@ def init_instagram() -> None:
             except Exception as exc:  # noqa: BLE001
                 log.warning("Could not persist IG session: %s", exc)
             ig_client = client
-            log.warning("Instagram logged in via sessionid")
+            log.warning("✅ Instagram logged in via sessionid")
             _notify_admins("✅ ورود اینستاگرام با sessionid موفق بود.")
             return
         except Exception as exc:  # noqa: BLE001
-            log.warning("sessionid login failed, trying username/password: %s", exc)
-            _notify_admins(f"⚠️ sessionid کار نکرد: {exc}")
+            log.error("❌ sessionid login failed: %s", exc)
+            _notify_admins(f"❌ sessionid کار نکرد: {exc}")
 
     # ── روش دوم: یوزرنیم + پسورد (fallback) ────────────────────────────────
     if not (IG_USERNAME and IG_PASSWORD):
