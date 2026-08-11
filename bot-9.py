@@ -380,6 +380,8 @@ def init_instagram() -> None:
 
 async def _async_init_instagram(loop: asyncio.AbstractEventLoop) -> None:
     """Run the blocking init_instagram() in a thread without freezing the bot."""
+    global _main_loop
+    _main_loop = loop  # ensure notify_admins works from background thread
     await loop.run_in_executor(None, init_instagram)
 
 
@@ -501,22 +503,43 @@ async def cmd_help(bot: Robot, message: Message) -> None:
     )
 
 
+@bot.on_message(commands=["igstatus"])
+async def cmd_igstatus(bot: Robot, message: Message) -> None:
+    """Admin-only: show Instagram login debug info."""
+    from urllib.parse import unquote
+    uid = message.sender_id
+    if uid not in ADMIN_IDS:
+        return
+    sid_env = unquote(IG_SESSION_ID) if IG_SESSION_ID else ""
+    sid_cookie = _parse_sessionid_from_cookies(COOKIES_FILE) if COOKIES_FILE.exists() else ""
+    lines = [
+        f"HAS_INSTA: {HAS_INSTA}",
+        f"ig_client: {'✅ متصل' if ig_client else '❌ None'}",
+        f"IG_SESSION_ID env: {'✅ ' + sid_env[:25] + '...' if sid_env else '❌ خالی'}",
+        f"COOKIES_FILE: {'✅ ' + str(COOKIES_FILE) if COOKIES_FILE.exists() else '❌ پیدا نشد'}",
+        f"sessionid در کوکی: {'✅ ' + sid_cookie[:25] + '...' if sid_cookie else '❌ پیدا نشد'}",
+        f"IG_SESSION_FILE: {'✅ وجود داره' if IG_SESSION_FILE.exists() else '❌ نیست'}",
+    ]
+    await message.reply("\n".join(lines))
+
+
 @bot.on_message(commands=["login"])
 async def cmd_login(bot: Robot, message: Message) -> None:
-    """Admin-only: (re)attempt Instagram login. Run this after the bot is
-    already up so the bot can message you back if a verification code is
-    needed (send it with /code 123456)."""
+    """Admin-only: (re)attempt Instagram login via sessionid or user/pass."""
     global _main_loop
     uid = message.sender_id
     if uid not in ADMIN_IDS:
         return
-    if not (HAS_INSTA and IG_USERNAME and IG_PASSWORD):
-        await message.reply(
-            "❌ INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD ست نشده."
-        )
+    if not HAS_INSTA:
+        await message.reply("❌ instagrapi نصب نیست.")
+        return
+    from urllib.parse import unquote
+    sid = unquote(IG_SESSION_ID) if IG_SESSION_ID else _parse_sessionid_from_cookies(COOKIES_FILE)
+    if not sid and not (IG_USERNAME and IG_PASSWORD):
+        await message.reply("❌ نه IG_SESSION_ID داری، نه INSTAGRAM_USERNAME/PASSWORD.")
         return
     _main_loop = asyncio.get_running_loop()
-    await message.reply("🔄 در حال تلاش برای ورود به اینستاگرام…")
+    await message.reply("🔄 در حال تلاش برای ورود به اینستاگرام...")
     _spawn(_async_init_instagram(_main_loop))
 
 
@@ -1039,9 +1062,14 @@ async def dl_ig_username(
     profile browsing (yt-dlp does not support listing a user's feed).
     """
     if not ig_client:
-        await status.edit(MSG_IG_NO_SESSION, force=True)
-        STATS["errors"] += 1
-        return
+        # یه بار lazy login امتحان می‌کنیم قبل از اینکه تسلیم بشیم
+        await status.edit("🔄 در حال اتصال به اینستاگرام...", force=True)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, init_instagram)
+        if not ig_client:
+            await status.edit(MSG_IG_NO_SESSION, force=True)
+            STATS["errors"] += 1
+            return
 
     await status.edit(
         MSG_IG_FETCHING_USER.format(username=username), force=True
