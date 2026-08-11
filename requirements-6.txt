@@ -1,0 +1,19 @@
+# Rubika downloader bot — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# Core: Rubika bot framework
+rubka
+
+# Download engine (YouTube, TikTok, Twitter/X, and thousands more)
+yt-dlp
+
+# Instagram-specific path (optional but recommended for stories + private accounts)
+instagrapi
+
+# Optional but strongly recommended for faster segmented downloads:
+#   aria2c  (install via OS package manager, not pip)
+#   aria2c on Ubuntu/Debian:  sudo apt install aria2
+#   aria2c on CentOS/RHEL:    sudo yum install aria2
+
+# Optional for video height detection (caption "1080p" etc.):
+#   ffprobe is part of ffmpeg:  sudo apt install ffmpeg
