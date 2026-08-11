@@ -533,7 +533,10 @@ async def cmd_admin(bot: Robot, message: Message) -> None:
         "/clearusers - حذف همه کاربران\n"
         "/broadcast متن پیام - ارسال پیام همگانی\n"
         "/igstatus - وضعیت اینستاگرام\n"
-        "/login - تلاش مجدد ورود اینستاگرام"
+        "/login - ورود با sessionid\n"
+        "/loginpass - ورود با یوزرنیم + پسورد\n"
+        "/code 123456 - دادن کد تایید\n"
+        "/checkig - چک واقعی بودن لاگین"
     )
 
 
@@ -633,6 +636,7 @@ async def cmd_igstatus(bot: Robot, message: Message) -> None:
 
 @bot.on_message(commands=["login"])
 async def cmd_login(bot: Robot, message: Message) -> None:
+    """تلاش ورود با sessionid (روش قدیمی)"""
     global _main_loop, ig_client
     if message.sender_id not in ADMIN_IDS:
         return
@@ -642,7 +646,7 @@ async def cmd_login(bot: Robot, message: Message) -> None:
     from urllib.parse import unquote
     sid = unquote(IG_SESSION_ID) if IG_SESSION_ID else _parse_sessionid_from_cookies(COOKIES_FILE)
     if not sid:
-        await message.reply("❌ sessionid پیدا نشد.")
+        await message.reply("❌ sessionid پیدا نشد. از /loginpass استفاده کن.")
         return
 
     await message.reply(f"🔄 تلاش login با sessionid:\n{sid[:30]}...")
@@ -667,24 +671,128 @@ async def cmd_login(bot: Robot, message: Message) -> None:
             client.dump_settings(IG_SESSION_FILE)
         except Exception:
             pass
-        await message.reply("✅ ورود موفق!")
+        await message.reply("✅ ورود موفق با sessionid!")
     except Exception as exc:
-        await message.reply(f"❌ شکست:\n{exc}")
+        await message.reply(f"❌ شکست sessionid:\n{exc}\n\nاز /loginpass استفاده کن.")
+
+
+@bot.on_message(commands=["loginpass"])
+async def cmd_loginpass(bot: Robot, message: Message) -> None:
+    """ورود فقط با یوزرنیم + پسورد (بدون سشن‌آیدی)"""
+    global _main_loop, ig_client
+    if message.sender_id not in ADMIN_IDS:
+        return
+    if not HAS_INSTA:
+        await message.reply("❌ instagrapi نصب نیست.")
+        return
+    if not (IG_USERNAME and IG_PASSWORD):
+        await message.reply(
+            "❌ یوزرنیم یا پسورد ست نشده.\n\n"
+            "این دو تا رو ست کن:\n"
+            "INSTAGRAM_USERNAME=یوزرنیم\n"
+            "INSTAGRAM_PASSWORD=پسورد"
+        )
+        return
+
+    await message.reply(
+        f"🔄 در حال ورود با اکانت:\n"
+        f"یوزرنیم: {IG_USERNAME}\n"
+        f"اگر کد تایید خواست، با /code 123456 بفرست."
+    )
+    _main_loop = asyncio.get_running_loop()
+    loop = asyncio.get_running_loop()
+
+    def _try_login_pass():
+        from instagrapi import Client as _C
+        c = _C()
+        c.challenge_code_handler = _ig_challenge_code_handler
+        # پاک کردن سشن قبلی برای لاگین تمیز
+        if IG_SESSION_FILE.exists():
+            try:
+                IG_SESSION_FILE.unlink()
+            except Exception:
+                pass
+        c.login(IG_USERNAME, IG_PASSWORD)
+        return c
+
+    try:
+        client = await asyncio.wait_for(
+            loop.run_in_executor(None, _try_login_pass), timeout=120
+        )
+        ig_client = client
+        try:
+            IG_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+            client.dump_settings(IG_SESSION_FILE)
+        except Exception:
+            pass
+        await message.reply(f"✅ ورود موفق با اکانت {IG_USERNAME}!")
+    except Exception as exc:
+        await message.reply(f"❌ ورود با پسورد شکست خورد:\n{exc}")
 
 
 @bot.on_message(commands=["code"])
 async def cmd_code(bot: Robot, message: Message) -> None:
+    """دادن کد تایید اینستاگرام"""
     global _ig_challenge_code
     if message.sender_id not in ADMIN_IDS:
         return
     parts = (message.text or "").split(maxsplit=1)
     code = parts[1].strip() if len(parts) > 1 else ""
     if not code:
-        await message.reply("کد رو اینطوری بفرست: /code 123456")
+        await message.reply("کد رو اینطوری بفرست:\n/code 123456")
         return
     _ig_challenge_code = code
     _ig_challenge_event.set()
-    await message.reply("✅ کد ثبت شد.")
+    await message.reply("✅ کد ثبت شد، در حال تلاش برای ورود…")
+
+
+@bot.on_message(commands=["checkig"])
+async def cmd_checkig(bot: Robot, message: Message) -> None:
+    """چک کردن واقعی بودن لاگین اینستاگرام (بدون سشن‌آیدی)"""
+    if message.sender_id not in ADMIN_IDS:
+        return
+    if not HAS_INSTA:
+        await message.reply("❌ instagrapi نصب نیست.")
+        return
+    if ig_client is None:
+        await message.reply("❌ ig_client برابر None است. هنوز لاگین نشده.")
+        return
+
+    await message.reply("🔄 در حال بررسی اتصال واقعی به اینستاگرام...")
+    loop = asyncio.get_running_loop()
+
+    def _check():
+        # چند تست واقعی
+        results = []
+        try:
+            # تست ۱: گرفتن اطلاعات خود کاربر
+            account = ig_client.account_info()
+            results.append(f"✅ account_info: {account.username} (pk={account.pk})")
+        except Exception as e:
+            results.append(f"❌ account_info: {e}")
+
+        try:
+            # تست ۲: گرفتن تایم‌لاین
+            feed = ig_client.get_timeline_feed()
+            results.append(f"✅ timeline_feed: دریافت شد")
+        except Exception as e:
+            results.append(f"❌ timeline_feed: {e}")
+
+        try:
+            # تست ۳: گرفتن اطلاعات یک یوزرنیم عمومی
+            user_id = ig_client.user_id_from_username("instagram")
+            results.append(f"✅ user_id_from_username: {user_id}")
+        except Exception as e:
+            results.append(f"❌ user_id_from_username: {e}")
+
+        return results
+
+    try:
+        results = await asyncio.wait_for(loop.run_in_executor(None, _check), timeout=30)
+        text = "🔍 نتیجه بررسی اتصال اینستاگرام:\n\n" + "\n".join(results)
+        await message.reply(text)
+    except Exception as exc:
+        await message.reply(f"❌ خطا در بررسی:\n{exc}")
 
 
 # --------------------------------------------------------------------------- #
