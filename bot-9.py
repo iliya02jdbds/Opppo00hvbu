@@ -525,8 +525,8 @@ async def cmd_igstatus(bot: Robot, message: Message) -> None:
 
 @bot.on_message(commands=["login"])
 async def cmd_login(bot: Robot, message: Message) -> None:
-    """Admin-only: (re)attempt Instagram login via sessionid or user/pass."""
-    global _main_loop
+    """Admin-only: (re)attempt Instagram login via sessionid; shows exact error."""
+    global _main_loop, ig_client
     uid = message.sender_id
     if uid not in ADMIN_IDS:
         return
@@ -535,12 +535,33 @@ async def cmd_login(bot: Robot, message: Message) -> None:
         return
     from urllib.parse import unquote
     sid = unquote(IG_SESSION_ID) if IG_SESSION_ID else _parse_sessionid_from_cookies(COOKIES_FILE)
-    if not sid and not (IG_USERNAME and IG_PASSWORD):
-        await message.reply("❌ نه IG_SESSION_ID داری، نه INSTAGRAM_USERNAME/PASSWORD.")
+    if not sid:
+        await message.reply("❌ sessionid پیدا نشد. IG_SESSION_ID رو ست کن.")
         return
+
+    await message.reply(f"🔄 تلاش login با sessionid:\n{sid[:30]}...")
     _main_loop = asyncio.get_running_loop()
-    await message.reply("🔄 در حال تلاش برای ورود به اینستاگرام...")
-    _spawn(_async_init_instagram(_main_loop))
+    loop = asyncio.get_running_loop()
+
+    def _try_login():
+        from instagrapi import Client as _C
+        c = _C()
+        c.login_by_sessionid(sid)
+        return c
+
+    try:
+        client = await asyncio.wait_for(
+            loop.run_in_executor(None, _try_login), timeout=30
+        )
+        ig_client = client
+        try:
+            IG_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+            client.dump_settings(IG_SESSION_FILE)
+        except Exception:
+            pass
+        await message.reply("✅ ورود موفق! ig_client ست شد.")
+    except Exception as exc:
+        await message.reply(f"❌ login_by_sessionid شکست خورد:\n{exc}")
 
 
 @bot.on_message(commands=["code"])
