@@ -423,6 +423,12 @@ async def cmd_start(bot: Robot, message: Message) -> None:
     )
 
 
+@bot.on_message(commands=["myid"])
+async def cmd_myid(bot: Robot, message: Message) -> None:
+    """Anyone can run this to find their own numeric ID for ADMIN_IDS."""
+    await message.reply(f"🆔 آیدی شما: {message.sender_id}")
+
+
 @bot.on_message(commands=["help"])
 async def cmd_help(bot: Robot, message: Message) -> None:
     uid = message.sender_id
@@ -491,6 +497,7 @@ async def handle_text(bot: Robot, message: Message) -> None:
     uid = message.sender_id
     chat_id = message.chat_id
     STATS["users"].add(uid)
+    log.warning("Incoming message from sender_id=%s", uid)
 
     if not BOT_ENABLED and uid not in ADMIN_IDS:
         await message.reply(MSG_DISABLED)
