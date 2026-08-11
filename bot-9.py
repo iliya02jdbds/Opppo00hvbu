@@ -303,15 +303,21 @@ def _ig_challenge_code_handler(username: str, choice) -> str:
 
 
 def _parse_sessionid_from_cookies(cookies_path: Path) -> str:
-    """Extract sessionid value from a Netscape cookie file (URL-decoded)."""
+    """Extract sessionid value from a Netscape cookie file (URL-decoded).
+    Handles both normal lines and #HttpOnly_ prefixed lines.
+    """
     from urllib.parse import unquote
     try:
         for line in cookies_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("#") or not line.strip():
+            # strip #HttpOnly_ prefix but keep the rest
+            stripped = line.strip()
+            if stripped.startswith("#HttpOnly_"):
+                stripped = stripped[len("#HttpOnly_"):]
+            elif stripped.startswith("#") or not stripped:
                 continue
-            parts = line.strip().split("\t")
+            parts = stripped.split("\t")
             if len(parts) >= 7 and parts[5] == "sessionid":
-                return unquote(parts[6])  # decode %3A → :
+                return unquote(parts[6])
     except Exception as exc:  # noqa: BLE001
         log.warning("Could not parse sessionid from cookies file: %s", exc)
     return ""
@@ -542,6 +548,11 @@ async def cmd_login(bot: Robot, message: Message) -> None:
     await message.reply(f"🔄 تلاش login با sessionid:\n{sid[:30]}...")
     _main_loop = asyncio.get_running_loop()
     loop = asyncio.get_running_loop()
+
+    # اگه ig_client داره کار می‌کنه، دوباره login نزن
+    if ig_client:
+        await message.reply("✅ ig_client قبلاً متصله. نیازی به login مجدد نیست.\nاگه مشکل داری اول /igstatus بزن.")
+        return
 
     def _try_login():
         from instagrapi import Client as _C
