@@ -93,6 +93,9 @@ if _cookies_b64 and not COOKIES_FILE.exists():
 
 IG_USERNAME = os.environ.get("INSTAGRAM_USERNAME", "").strip()
 IG_PASSWORD = os.environ.get("INSTAGRAM_PASSWORD", "").strip()
+# IG_SESSION_ID: مستقیم sessionid رو از کوکی مرورگر بذار اینجا
+# (یا از env var بخون) — بدون نیاز به یوزرنیم/پسورد/ترموکس
+IG_SESSION_ID = os.environ.get("IG_SESSION_ID", "").strip()
 MAX_IG_POSTS = int(os.environ.get("MAX_IG_POSTS", "3"))   # posts returned per username lookup
 
 INFO_TIMEOUT = int(os.environ.get("INFO_TIMEOUT", "45"))
@@ -245,6 +248,18 @@ def is_ig_username(text: str) -> Optional[str]:
 # so a restart does not force a fresh (challenge-prone) login every time.
 IG_SESSION_FILE = Path(os.environ.get("IG_SESSION_FILE", "ig_session.json"))
 
+# If a session was generated elsewhere (e.g. via the Termux login script,
+# from a normal residential/mobile IP) and passed in as base64, write it
+# out on first boot — same pattern as COOKIES_CONTENT_B64 above.
+_ig_session_b64 = os.environ.get("IG_SESSION_CONTENT_B64", "").strip()
+if _ig_session_b64 and not IG_SESSION_FILE.exists():
+    import base64 as _base64
+    try:
+        IG_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        IG_SESSION_FILE.write_bytes(_base64.b64decode(_ig_session_b64))
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("bot").error("Failed to write IG session file: %s", exc)
+
 # Verification-code handoff between the (blocking, background-thread) IG
 # login call and the /code command sent by an admin through the bot chat.
 _ig_challenge_event = threading.Event()
@@ -287,9 +302,50 @@ def _ig_challenge_code_handler(username: str, choice) -> str:
     return _ig_challenge_code
 
 
+def _parse_sessionid_from_cookies(cookies_path: Path) -> str:
+    """Extract sessionid value from a Netscape cookie file."""
+    try:
+        for line in cookies_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = line.strip().split("\t")
+            if len(parts) >= 7 and parts[5] == "sessionid":
+                return parts[6]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not parse sessionid from cookies file: %s", exc)
+    return ""
+
+
 def init_instagram() -> None:
     global ig_client
-    if not (HAS_INSTA and IG_USERNAME and IG_PASSWORD):
+    if not HAS_INSTA:
+        return
+
+    # ── روش اول: sessionid مستقیم (بدون پسورد، بدون چالش) ──────────────────
+    # اولویت: env var > cookies.txt > skip
+    session_id = IG_SESSION_ID
+    if not session_id and COOKIES_FILE.exists():
+        session_id = _parse_sessionid_from_cookies(COOKIES_FILE)
+
+    if session_id:
+        try:
+            client = InstaClient()
+            client.login_by_sessionid(session_id)
+            try:
+                IG_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+                client.dump_settings(IG_SESSION_FILE)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not persist IG session: %s", exc)
+            ig_client = client
+            log.warning("Instagram logged in via sessionid")
+            _notify_admins("✅ ورود اینستاگرام با sessionid موفق بود.")
+            return
+        except Exception as exc:  # noqa: BLE001
+            log.warning("sessionid login failed, trying username/password: %s", exc)
+            _notify_admins(f"⚠️ sessionid کار نکرد: {exc}")
+
+    # ── روش دوم: یوزرنیم + پسورد (fallback) ────────────────────────────────
+    if not (IG_USERNAME and IG_PASSWORD):
         return
     try:
         client = InstaClient()
