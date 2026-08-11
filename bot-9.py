@@ -76,6 +76,20 @@ MAX_CACHE_ENTRIES = int(os.environ.get("MAX_CACHE_ENTRIES", "50"))
 DEFAULT_QUALITY = os.environ.get("DEFAULT_QUALITY", "720").strip()
 CONCURRENT_FRAGMENTS = max(4, int(os.environ.get("CONCURRENT_FRAGMENTS", "16")))
 COOKIES_FILE = Path(os.environ.get("COOKIES_FILE", "cookies.txt"))
+
+# If COOKIES_CONTENT_B64 is set and the cookie file doesn't already exist
+# (e.g. first boot on a fresh Railway volume), decode it and write it out.
+# On subsequent restarts the file already exists on the volume, so this
+# is skipped and the persisted cookies are used as-is.
+_cookies_b64 = os.environ.get("COOKIES_CONTENT_B64", "").strip()
+if _cookies_b64 and not COOKIES_FILE.exists():
+    import base64
+    try:
+        COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        COOKIES_FILE.write_bytes(base64.b64decode(_cookies_b64))
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("bot").error("Failed to write cookies file: %s", exc)
+
 IG_USERNAME = os.environ.get("INSTAGRAM_USERNAME", "").strip()
 IG_PASSWORD = os.environ.get("INSTAGRAM_PASSWORD", "").strip()
 MAX_IG_POSTS = int(os.environ.get("MAX_IG_POSTS", "3"))   # posts returned per username lookup
