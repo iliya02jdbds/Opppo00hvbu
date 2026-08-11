@@ -64,7 +64,7 @@ except ImportError:  # pragma: no cover
 # --------------------------------------------------------------------------- #
 BOT_TOKEN = os.environ.get(
     "BOT_TOKEN",
-    CBFJCA0CGJYHRSVMVIXCHVNXRWASMKEKVIXCRORAAGJSJAVOBRJFHTUPCATYTNCI",
+    "CBFJCA0CGJYHRSVMVIXCHVNXRWASMKEKVIXCRORAAGJSJAVOBRJFHTUPCATYTNCI",
 )
 ADMIN_IDS: set[str] = {
     x.strip() for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()
