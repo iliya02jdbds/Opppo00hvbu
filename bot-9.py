@@ -39,6 +39,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -240,32 +241,87 @@ def is_ig_username(text: str) -> Optional[str]:
 # --------------------------------------------------------------------------- #
 # Instagram client — lazy init, every call guarded
 # --------------------------------------------------------------------------- #
+# Persist the IG session on the same volume as the cookies file if possible,
+# so a restart does not force a fresh (challenge-prone) login every time.
+IG_SESSION_FILE = Path(os.environ.get("IG_SESSION_FILE", "ig_session.json"))
+
+# Verification-code handoff between the (blocking, background-thread) IG
+# login call and the /code command sent by an admin through the bot chat.
+_ig_challenge_event = threading.Event()
+_ig_challenge_code = ""
+# Set to the live asyncio loop right before an async-triggered login attempt
+# (see cmd_login), so background-thread code can schedule bot.send_message.
+_main_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _notify_admins(text: str) -> None:
+    """Send *text* to every admin. Safe to call from a background thread."""
+    if _main_loop is None or not ADMIN_IDS:
+        log.warning("Could not notify admins (no loop/ADMIN_IDS yet): %s", text)
+        return
+    for admin_id in ADMIN_IDS:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                bot.send_message(admin_id, text), _main_loop
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Failed to notify admin %s: %s", admin_id, exc)
+
+
+def _ig_challenge_code_handler(username: str, choice) -> str:
+    """instagrapi calls this (from a background thread) when Instagram
+    requires a verification code. Blocks until an admin sends
+    /code XXXXXX to the bot, or 5 minutes pass.
+    """
+    _ig_challenge_event.clear()
+    global _ig_challenge_code
+    _ig_challenge_code = ""
+    _notify_admins(
+        f"⚠️ اینستاگرام برای ورود اکانت {username} کد تایید می‌خواد.\n"
+        f"کد رو اینطوری بفرست:\n/code 123456"
+    )
+    log.warning("Waiting for IG verification code for %s...", username)
+    if not _ig_challenge_event.wait(timeout=300):
+        log.warning("Timed out waiting for IG verification code.")
+        return ""
+    return _ig_challenge_code
+
+
 def init_instagram() -> None:
     global ig_client
     if not (HAS_INSTA and IG_USERNAME and IG_PASSWORD):
         return
     try:
         client = InstaClient()
-        session_path = Path("ig_session.json")
-        if session_path.exists():
+        client.challenge_code_handler = _ig_challenge_code_handler
+        if IG_SESSION_FILE.exists():
             try:
-                client.load_settings(session_path)
+                client.load_settings(IG_SESSION_FILE)
                 client.login(IG_USERNAME, IG_PASSWORD)
                 ig_client = client
-                log.warning("Instagram session restored from ig_session.json")
+                log.warning("Instagram session restored from %s", IG_SESSION_FILE)
+                _notify_admins("✅ سشن اینستاگرام بازیابی شد.")
                 return
             except Exception as exc:  # noqa: BLE001
                 log.warning("Saved IG session invalid, fresh login: %s", exc)
         client.login(IG_USERNAME, IG_PASSWORD)
         try:
-            client.dump_settings(session_path)
+            IG_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+            client.dump_settings(IG_SESSION_FILE)
         except Exception as exc:  # noqa: BLE001
             log.warning("Could not persist IG session: %s", exc)
         ig_client = client
         log.warning("Instagram logged in as %s", IG_USERNAME)
+        _notify_admins(f"✅ ورود اینستاگرام با اکانت {IG_USERNAME} موفق بود.")
     except Exception as exc:  # noqa: BLE001
         log.error("Instagram login failed: %s", exc)
         ig_client = None
+        _notify_admins(f"❌ ورود اینستاگرام ناموفق بود: {exc}")
+
+
+async def _async_init_instagram(loop: asyncio.AbstractEventLoop) -> None:
+    """Run the blocking init_instagram() in a thread without freezing the bot."""
+    await loop.run_in_executor(None, init_instagram)
 
 
 # --------------------------------------------------------------------------- #
@@ -378,6 +434,42 @@ async def cmd_help(bot: Robot, message: Message) -> None:
         f"سایتی که yt-dlp پشتیبانی می‌کند.",
         main_panel(uid),
     )
+
+
+@bot.on_message(commands=["login"])
+async def cmd_login(bot: Robot, message: Message) -> None:
+    """Admin-only: (re)attempt Instagram login. Run this after the bot is
+    already up so the bot can message you back if a verification code is
+    needed (send it with /code 123456)."""
+    global _main_loop
+    uid = message.sender_id
+    if uid not in ADMIN_IDS:
+        return
+    if not (HAS_INSTA and IG_USERNAME and IG_PASSWORD):
+        await message.reply(
+            "❌ INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD ست نشده."
+        )
+        return
+    _main_loop = asyncio.get_running_loop()
+    await message.reply("🔄 در حال تلاش برای ورود به اینستاگرام…")
+    _spawn(_async_init_instagram(_main_loop))
+
+
+@bot.on_message(commands=["code"])
+async def cmd_code(bot: Robot, message: Message) -> None:
+    """Admin-only: supply the verification code Instagram sent."""
+    global _ig_challenge_code
+    uid = message.sender_id
+    if uid not in ADMIN_IDS:
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    code = parts[1].strip() if len(parts) > 1 else ""
+    if not code:
+        await message.reply("کد رو اینطوری بفرست: /code 123456")
+        return
+    _ig_challenge_code = code
+    _ig_challenge_event.set()
+    await message.reply("✅ کد ثبت شد، در حال تلاش برای ورود…")
 
 
 # --------------------------------------------------------------------------- #
